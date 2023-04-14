@@ -1,0 +1,1 @@
+MIRIFLAGS="-Zmiri-ignore-leaks" cargo miri test
