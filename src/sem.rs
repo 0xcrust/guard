@@ -72,22 +72,28 @@ impl<T> std::ops::Deref for SemGuard<'_, T> {
 mod test {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
 
     #[test]
     fn cant_access_when_max_guards_active() {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
 
         let value = 5;
-        let sem = Box::leak::<'static>(Box::new(SemVar::new(10, value)));
+        let sem = Arc::new(SemVar::new(10, value));
 
         for _ in 0..100 {
-            std::thread::spawn(|| {
-                let _guard: &'static mut _ = Box::leak(Box::new(sem.access()));
+            let sem = Arc::clone(&sem);
+            std::thread::spawn(move || {
+                // So the guards don't get dropped.
+                std::mem::forget(sem.access());
                 _ = &COUNT.fetch_add(1, Ordering::SeqCst);
-                std::thread::sleep(std::time::Duration::from_secs(3));
             });
         }
 
+        std::thread::sleep(Duration::from_secs(1));
+        // Since the guards don't get dropped, only the first
+        // 10 threads should have been able to access the value.
         assert_eq!(COUNT.load(Ordering::SeqCst), 10);
     }
 
@@ -96,6 +102,7 @@ mod test {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
 
         let value = 5;
+        // So we can pass the guards around for testing.
         let sem = Box::leak::<'static>(Box::new(SemVar::new(10, value)));
 
         let mut first_set = vec![];
@@ -104,7 +111,7 @@ mod test {
         for _ in 0..10 {
             let handle = std::thread::spawn(|| {
                 let guard = sem.access();
-                let x = &COUNT.fetch_add(1, Ordering::SeqCst);
+                _ = &COUNT.fetch_add(1, Ordering::SeqCst);
                 guard
             });
             first_set.push(handle);
@@ -125,22 +132,25 @@ mod test {
             guards.push(handle.join().unwrap());
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
+        // Since we took ownership of the guards to prevent them
+        // being dropped, only the first 10 threads should have run.
         assert_eq!(COUNT.load(Ordering::SeqCst), 10);
 
         for guard in guards {
+            // Release each guard
             drop(guard);
         }
         for handle in second_set {
             handle.join().unwrap();
         }
 
+        // Now the second set should be able to access the
+        // value
         assert_eq!(COUNT.load(Ordering::SeqCst), 20);
     }
 
     #[test]
     fn everyone_gets_their_chance() {
-        use std::sync::Arc;
-
         static COUNT: AtomicUsize = AtomicUsize::new(0);
 
         let value = 5;
