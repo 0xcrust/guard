@@ -103,6 +103,8 @@ mod test {
 
         let value = 5;
         // So we can pass the guards around for testing.
+        // This means that we run miri tests with Zmiri-ignore-leaks so 
+        // they don't fail.
         let sem = Box::leak::<'static>(Box::new(SemVar::new(10, value)));
 
         let mut first_set = vec![];
