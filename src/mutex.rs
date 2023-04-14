@@ -47,17 +47,14 @@ impl<T> DerefMut for MutexGuard<'_, T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use std::time::Instant;
 
     #[test]
     fn mutex_test_single_thread() {
         let m = Mutex::new(0);
         std::hint::black_box(&m);
-        let start = Instant::now();
         for _ in 0..100 {
             *m.lock() += 1;
         }
-        let duration = start.elapsed();
         assert_eq!(*m.lock(), 100);
     }
 
@@ -65,7 +62,6 @@ mod test {
     fn mutex_test_multi_threads() {
         let m = Mutex::new(0);
         std::hint::black_box(&m);
-        let start = Instant::now();
         std::thread::scope(|s| {
             for _ in 0..4 {
                 s.spawn(|| {
@@ -75,7 +71,6 @@ mod test {
                 });
             }
         });
-        let duration = start.elapsed();
         assert_eq!(*m.lock(), 400);
     }
 }
