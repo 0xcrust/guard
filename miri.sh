@@ -1,1 +1,1 @@
-MIRIFLAGS="-Zmiri-ignore-leaks" cargo miri test
+cargo clean && MIRIFLAGS="-Zmiri-ignore-leaks" cargo miri test
