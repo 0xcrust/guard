@@ -6,20 +6,23 @@ pub struct Mutex<T> {
     inner: SemVar<UnsafeCell<T>>,
 }
 
-/// It's safe to share across threads since single access
-/// is enforced.
+/// SAFETY: It's safe to share across threads since 
+/// single access is enforced.
 unsafe impl<T> Sync for Mutex<T> where T: Send {}
 
 /// A guard that represents exclusive access to the guarded value.
 pub struct MutexGuard<'a, T>(SemGuard<'a, UnsafeCell<T>>);
 
 impl<T> Mutex<T> {
+    /// Create a new Mutex guarding value T.
     pub fn new(value: T) -> Self {
         Self {
             inner: SemVar::new(1, UnsafeCell::new(value)),
         }
     }
 
+    /// Try to gain access to the protected value. Returns
+    /// a [SemGuard].
     pub fn lock(&self) -> MutexGuard<T> {
         let guard = self.inner.access();
         MutexGuard(guard)
