@@ -1,28 +1,61 @@
-#![allow(dead_code)]
-
 use atomic_wait::{wait, wake_one};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A type representing a semaphore-protected value.
-pub struct SemVar<T> {
+pub(crate) struct SemVar<T> {
+    /// The maximum allowed accesses at a time.
     capacity: u32,
-    // Number of active users
+    /// Number of active accesses.
     count: AtomicU32,
+    /// The value being guarded.
     value: T,
 }
 
-pub struct SemGuard<'a, T> {
+/// A guard that represents shared access to the inner value.
+pub(crate) struct SemGuard<'a, T> {
     inner: &'a SemVar<T>,
+}
+
+impl<T> SemVar<T> {
+    /// Create a new semvar with the maximum access limit set
+    /// to `capacity`.
+    pub fn new(capacity: u32, value: T) -> Self {
+        Self {
+            capacity,
+            count: AtomicU32::new(0),
+            value,
+        }
+    }
+
+    /// Try to gain access to the protected value. Returns
+    /// a [SemGuard].
+    pub fn access(&self) -> SemGuard<T> {
+        let mut value = self.count.load(Ordering::Relaxed);
+
+        loop {
+            if value < self.capacity {
+                match self.count.compare_exchange(
+                    value,
+                    value + 1,
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => return SemGuard { inner: self },
+                    Err(e) => value = e,
+                }
+            }
+
+            if value == self.capacity {
+                wait(&self.count, value);
+                value = self.count.load(Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 impl<T> Drop for SemGuard<'_, T> {
     fn drop(&mut self) {
-        let res = self.inner.count.fetch_sub(1, Ordering::SeqCst);
-        println!(
-            "{:?} Access dropped. count is now {}",
-            std::thread::current(),
-            res - 1
-        );
+        self.inner.count.fetch_sub(1, Ordering::Release);
         wake_one(&self.inner.count);
     }
 }
@@ -32,47 +65,6 @@ impl<T> std::ops::Deref for SemGuard<'_, T> {
 
     fn deref(&self) -> &T {
         &self.inner.value
-    }
-}
-
-impl<T> SemVar<T> {
-    pub fn new(capacity: u32, value: T) -> Self {
-        Self {
-            capacity,
-            count: AtomicU32::new(0),
-            value,
-        }
-    }
-
-    pub fn access(&self) -> SemGuard<T> {
-        let mut value = self.count.load(Ordering::SeqCst);
-
-        loop {
-            if value < self.capacity {
-                match self.count.compare_exchange(
-                    value,
-                    value + 1,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ) {
-                    Ok(_) => {
-                        println!(
-                            "{:?}. Access acquired. count is now {}",
-                            std::thread::current(),
-                            value + 1
-                        );
-                        return SemGuard { inner: self };
-                    }
-                    Err(e) => value = e,
-                }
-            }
-
-            if value == self.capacity {
-                println!("{:?}. Waiting.", std::thread::current());
-                wait(&self.count, value);
-                value = self.count.load(Ordering::SeqCst);
-            }
-        }
     }
 }
 
@@ -87,11 +79,9 @@ mod test {
 
         let value = 5;
         let sem = Box::leak::<'static>(Box::new(SemVar::new(10, value)));
-        std::hint::black_box(&sem);
 
         for _ in 0..100 {
             std::thread::spawn(|| {
-                std::hint::black_box(());
                 let _guard: &'static mut _ = Box::leak(Box::new(sem.access()));
                 _ = &COUNT.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(std::time::Duration::from_secs(3));
@@ -107,14 +97,12 @@ mod test {
 
         let value = 5;
         let sem = Box::leak::<'static>(Box::new(SemVar::new(10, value)));
-        std::hint::black_box(&sem);
 
         let mut first_set = vec![];
         let mut second_set = vec![];
 
         for _ in 0..10 {
             let handle = std::thread::spawn(|| {
-                std::hint::black_box(());
                 let guard = sem.access();
                 let x = &COUNT.fetch_add(1, Ordering::SeqCst);
                 guard
@@ -124,7 +112,6 @@ mod test {
 
         for _ in 0..10 {
             let handle = std::thread::spawn(|| {
-                std::hint::black_box(());
                 let guard = sem.access();
                 _ = &COUNT.fetch_add(1, Ordering::SeqCst);
                 guard
@@ -137,20 +124,17 @@ mod test {
         for handle in first_set {
             guards.push(handle.join().unwrap());
         }
-        let count = COUNT.load(Ordering::SeqCst);
-        println!("Count before first assertion: {}", count);
-        assert_eq!(count, 10);
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        assert_eq!(COUNT.load(Ordering::SeqCst), 10);
 
         for guard in guards {
             drop(guard);
         }
-
         for handle in second_set {
             handle.join().unwrap();
         }
-        let count = COUNT.load(Ordering::SeqCst);
-        println!("Count before first assertion: {}", count);
-        assert_eq!(count, 20);
+
+        assert_eq!(COUNT.load(Ordering::SeqCst), 20);
     }
 
     #[test]
@@ -161,14 +145,12 @@ mod test {
 
         let value = 5;
         let sem = Arc::new(SemVar::new(3, value));
-        std::hint::black_box(&sem);
 
         let mut handles = Vec::with_capacity(100);
 
         for _ in 0..100 {
             let sem = Arc::clone(&sem);
             let handle = std::thread::spawn(move || {
-                std::hint::black_box(());
                 let _guard = sem.access();
                 _ = &COUNT.fetch_add(1, Ordering::SeqCst);
             });
@@ -179,8 +161,6 @@ mod test {
             handle.join().unwrap();
         }
 
-        let count = COUNT.load(Ordering::SeqCst);
-        println!("Count before first assertion: {}", count);
-        assert_eq!(count, 100);
+        assert_eq!(COUNT.load(Ordering::SeqCst), 100);
     }
 }
