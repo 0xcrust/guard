@@ -6,7 +6,7 @@ pub struct Mutex<T> {
     inner: SemVar<UnsafeCell<T>>,
 }
 
-/// SAFETY: It's safe to share across threads since 
+/// SAFETY: It's safe to share across threads since
 /// single access is enforced.
 unsafe impl<T> Sync for Mutex<T> where T: Send {}
 

@@ -76,79 +76,59 @@ mod test {
     use std::time::Duration;
 
     #[test]
-    fn cant_access_when_max_guards_active() {
-        static COUNT: AtomicUsize = AtomicUsize::new(0);
-
-        let value = 5;
-        let sem = Arc::new(SemVar::new(10, value));
-
-        for _ in 0..100 {
-            let sem = Arc::clone(&sem);
-            std::thread::spawn(move || {
-                // So the guards don't get dropped.
-                std::mem::forget(sem.access());
-                _ = &COUNT.fetch_add(1, Ordering::SeqCst);
-            });
-        }
-
-        std::thread::sleep(Duration::from_secs(1));
-        // Since the guards don't get dropped, only the first
-        // 10 threads should have been able to access the value.
-        assert_eq!(COUNT.load(Ordering::SeqCst), 10);
-    }
-
-    #[test]
     fn waits_when_max_guards_active() {
         static COUNT: AtomicUsize = AtomicUsize::new(0);
 
         let value = 5;
         // So we can pass the guards around for testing.
-        // This means that we run miri tests with Zmiri-ignore-leaks so 
-        // they don't fail.
         let sem = Box::leak::<'static>(Box::new(SemVar::new(10, value)));
 
-        let mut first_set = vec![];
-        let mut second_set = vec![];
+        std::thread::scope(|s| {
+            let mut first_set = vec![];
+            let mut second_set = vec![];
 
-        for _ in 0..10 {
-            let handle = std::thread::spawn(|| {
-                let guard = sem.access();
-                _ = &COUNT.fetch_add(1, Ordering::SeqCst);
-                guard
-            });
-            first_set.push(handle);
-        }
+            for _ in 0..10 {
+                let handle = s.spawn(|| {
+                    let guard = sem.access();
+                    _ = &COUNT.fetch_add(1, Ordering::SeqCst);
+                    guard
+                });
+                first_set.push(handle);
+            }
 
-        for _ in 0..10 {
-            let handle = std::thread::spawn(|| {
-                let guard = sem.access();
-                _ = &COUNT.fetch_add(1, Ordering::SeqCst);
-                guard
-            });
-            second_set.push(handle);
-        }
+            for _ in 0..10 {
+                let handle = s.spawn(|| {
+                    let guard = sem.access();
+                    _ = &COUNT.fetch_add(1, Ordering::SeqCst);
+                    guard
+                });
+                second_set.push(handle);
+            }
 
-        let mut guards = vec![];
+            let mut guards = vec![];
 
-        for handle in first_set {
-            guards.push(handle.join().unwrap());
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-        // Since we took ownership of the guards to prevent them
-        // being dropped, only the first 10 threads should have run.
-        assert_eq!(COUNT.load(Ordering::SeqCst), 10);
+            for handle in first_set {
+                guards.push(handle.join().unwrap());
+            }
+            std::thread::sleep(Duration::from_secs(1));
+            // Since we took ownership of the guards to prevent them
+            // being dropped, only the first 10 threads should have run.
+            assert_eq!(COUNT.load(Ordering::SeqCst), 10);
 
-        for guard in guards {
-            // Release each guard
-            drop(guard);
-        }
-        for handle in second_set {
-            handle.join().unwrap();
-        }
+            for guard in guards {
+                // Release each guard
+                drop(guard);
+            }
+            for handle in second_set {
+                handle.join().unwrap();
+            }
 
-        // Now the second set should be able to access the
-        // value
-        assert_eq!(COUNT.load(Ordering::SeqCst), 20);
+            // Now the second set should be able to access the
+            // value
+            assert_eq!(COUNT.load(Ordering::SeqCst), 20);
+        });
+
+        _ = unsafe { Box::from_raw(sem) };
     }
 
     #[test]
